@@ -67,9 +67,29 @@ jobs:
           export CONFIG__CUSTOM_MODEL_MAX_TOKENS="32000"
           export CONFIG__RESPONSE_LANGUAGE="zh-CN"
           export CONFIG__AI_TIMEOUT="240"
+          export CONFIG__LARGE_PATCH_POLICY="clip"
+          export CONFIG__IGNORE_PR_TITLE='["^\\[Auto\\]", "^Auto"]'
+          export CONFIG__IGNORE_PR_LABELS='["skip pr-agent"]'
+          export PR_DESCRIPTION__GENERATE_AI_TITLE="false"
+          export PR_DESCRIPTION__PUBLISH_LABELS="false"
+          export PR_DESCRIPTION__ENABLE_PR_DIAGRAM="false"
+          export PR_DESCRIPTION__COLLAPSIBLE_FILE_LIST="adaptive"
+          export PR_DESCRIPTION__ADD_ORIGINAL_USER_DESCRIPTION="true"
+          export PR_REVIEWER__EXTRA_INSTRUCTIONS=$'请用中文输出。\n优先指出 P0/P1 风险，避免纠结纯格式问题。\n重点检查安全、权限、状态一致性、异步/缓存、副作用和测试缺口。'
+          export PR_REVIEWER__NUM_MAX_FINDINGS="5"
+          export PR_REVIEWER__PERSISTENT_COMMENT="true"
+          export PR_REVIEWER__PUBLISH_OUTPUT_NO_SUGGESTIONS="true"
+          export PR_REVIEWER__REQUIRE_TESTS_REVIEW="true"
+          export PR_REVIEWER__REQUIRE_SECURITY_REVIEW="true"
+          export PR_REVIEWER__REQUIRE_ESTIMATE_EFFORT_TO_REVIEW="true"
+          export PR_REVIEWER__REQUIRE_CAN_BE_SPLIT_REVIEW="true"
+          export PR_REVIEWER__REQUIRE_TODO_SCAN="false"
+          export PR_REVIEWER__ENABLE_REVIEW_LABELS_EFFORT="false"
+          export PR_REVIEWER__ENABLE_REVIEW_LABELS_SECURITY="true"
           export PR_CODE_SUGGESTIONS__FOCUS_ONLY_ON_PROBLEMS="true"
           export PR_CODE_SUGGESTIONS__SUGGESTIONS_SCORE_THRESHOLD="7"
           export PR_CODE_SUGGESTIONS__COMMITABLE_CODE_SUGGESTIONS="false"
+          export PR_QUESTIONS__USE_CONVERSATION_HISTORY="true"
 
           if [ -z "$OPENAI__KEY" ]; then
             echo "Missing OPENAI_KEY or OPENAI_API_KEY secret." >&2
