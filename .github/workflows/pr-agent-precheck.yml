@@ -1,0 +1,82 @@
+name: PR-Agent Precheck
+
+"on":
+  workflow_dispatch:
+    inputs:
+      pr_url:
+        description: "Pull request URL to review"
+        required: true
+        type: string
+      command:
+        description: "PR-Agent command"
+        required: true
+        type: choice
+        default: improve
+        options:
+          - improve
+          - review
+          - describe
+      model:
+        description: "LiteLLM model name"
+        required: true
+        type: string
+        default: openai/claude-fable-5
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  pr-agent-precheck:
+    name: Run PR-Agent precheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install PR-Agent CLI
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pr-agent==0.39.0"
+
+      - name: Run PR-Agent
+        env:
+          PR_URL: ${{ inputs.pr_url }}
+          PR_AGENT_COMMAND: ${{ inputs.command }}
+          PR_AGENT_MODEL: ${{ inputs.model }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_AGENT_GITHUB_TOKEN: ${{ secrets.PR_AGENT_GITHUB_TOKEN }}
+          OPENAI_KEY_SECRET: ${{ secrets.OPENAI_KEY }}
+          OPENAI_API_KEY_SECRET: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_BASE_SECRET: ${{ secrets.OPENAI_API_BASE }}
+          OPENAI_BASE_URL_SECRET: ${{ secrets.OPENAI_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          export GITHUB__USER_TOKEN="${PR_AGENT_GITHUB_TOKEN:-$GITHUB_TOKEN}"
+          export OPENAI__KEY="${OPENAI_KEY_SECRET:-$OPENAI_API_KEY_SECRET}"
+          export OPENAI__API_BASE="${OPENAI_API_BASE_SECRET:-$OPENAI_BASE_URL_SECRET}"
+          export CONFIG__MODEL="$PR_AGENT_MODEL"
+          export CONFIG__FALLBACK_MODELS="[]"
+          export CONFIG__CUSTOM_MODEL_MAX_TOKENS="32000"
+          export CONFIG__RESPONSE_LANGUAGE="zh-CN"
+          export CONFIG__AI_TIMEOUT="240"
+          export PR_CODE_SUGGESTIONS__FOCUS_ONLY_ON_PROBLEMS="true"
+          export PR_CODE_SUGGESTIONS__SUGGESTIONS_SCORE_THRESHOLD="7"
+          export PR_CODE_SUGGESTIONS__COMMITABLE_CODE_SUGGESTIONS="false"
+
+          if [ -z "$OPENAI__KEY" ]; then
+            echo "Missing OPENAI_KEY or OPENAI_API_KEY secret." >&2
+            exit 1
+          fi
+          if [ -z "$OPENAI__API_BASE" ]; then
+            echo "Missing OPENAI_API_BASE or OPENAI_BASE_URL secret." >&2
+            exit 1
+          fi
+
+          pr-agent --pr_url="$PR_URL" "$PR_AGENT_COMMAND"
