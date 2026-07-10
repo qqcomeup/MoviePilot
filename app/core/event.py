@@ -83,6 +83,8 @@ class EventManager(metaclass=Singleton):
         self.__broadcast_subscribers: Dict[EventType, Dict[str, Callable]] = {}
         # 链式事件的订阅者
         self.__chain_subscribers: Dict[ChainEventType, Dict[str, tuple[int, Callable]]] = {}
+        # 插件管理器确认后的事件处理器归属，key 为 handler_identifier，value 为 (plugin_id, handler_object_id)
+        self.__handler_plugin_ids: Dict[str, Tuple[str, int]] = {}
         # 禁用的事件处理器集合
         self.__disabled_handlers = set()
         # 禁用的事件处理器类集合
@@ -183,6 +185,7 @@ class EventManager(metaclass=Singleton):
         """
         with self.__lock:
             handler_identifier = self.__get_handler_identifier(handler)
+            self.__handler_plugin_ids.pop(handler_identifier, None)
 
             if isinstance(event_type, ChainEventType):
                 # 链式事件，按优先级排序
@@ -210,6 +213,7 @@ class EventManager(metaclass=Singleton):
                 else:
                     logger.debug(f"Subscribed to broadcast event: {event_type.value} - {handler_identifier}")
                 handlers[handler_identifier] = handler
+            self.__bind_loaded_plugin_event_handler(handler_identifier, handler)
 
     def remove_event_listener(self, event_type: Union[EventType, ChainEventType], handler: Callable):
         """
@@ -226,6 +230,117 @@ class EventManager(metaclass=Singleton):
             elif event_type in self.__broadcast_subscribers:
                 self.__broadcast_subscribers[event_type].pop(handler_identifier, None)
                 logger.debug(f"Unsubscribed from broadcast event: {event_type.value} - {handler_identifier}")
+            if not self.__is_handler_registered(handler_identifier):
+                self.__handler_plugin_ids.pop(handler_identifier, None)
+
+    def bind_plugin_event_handlers(self, plugin_id: str, plugin_cls: type):
+        """
+        将已注册的事件处理器绑定到插件管理器确认的真实插件ID。
+        :param plugin_id: 插件ID
+        :param plugin_cls: 插件类
+        """
+        if not plugin_id or not isinstance(plugin_cls, type):
+            return
+        if plugin_cls.__name__ != plugin_id:
+            return
+        try:
+            from app.core.plugin import PluginManager
+        except ImportError:
+            return
+        if PluginManager().plugins.get(plugin_id) is not plugin_cls:
+            return
+        with self.__lock:
+            self.__handler_plugin_ids = {
+                handler_id: binding
+                for handler_id, binding in self.__handler_plugin_ids.items()
+                if binding[0] != plugin_id
+            }
+            plugin_handler_ids = self.__get_plugin_handler_object_ids(plugin_cls)
+            if not plugin_handler_ids:
+                return
+            for subscribers in self.__broadcast_subscribers.values():
+                self.__bind_subscriber_handlers(plugin_id, plugin_handler_ids, subscribers)
+            for subscribers in self.__chain_subscribers.values():
+                self.__bind_subscriber_handlers(plugin_id, plugin_handler_ids, subscribers)
+
+    def unbind_plugin_event_handlers(self, plugin_id: Optional[str] = None):
+        """
+        清理插件事件处理器归属绑定。
+        :param plugin_id: 插件ID；为空时清理全部插件绑定
+        """
+        with self.__lock:
+            if plugin_id is None:
+                self.__handler_plugin_ids.clear()
+                return
+            self.__handler_plugin_ids = {
+                handler_id: binding
+                for handler_id, binding in self.__handler_plugin_ids.items()
+                if binding[0] != plugin_id
+            }
+
+    @classmethod
+    def __get_plugin_handler_object_ids(cls, plugin_cls: type) -> set:
+        """
+        获取插件类及其基类上的可调用处理器对象ID。
+        """
+        handler_ids = set()
+        for candidate_cls in inspect.getmro(plugin_cls):
+            if candidate_cls is object:
+                continue
+            for value in candidate_cls.__dict__.values():
+                handler = cls.__normalize_handler_callable(value)
+                if callable(handler):
+                    handler_ids.add(id(handler))
+        return handler_ids
+
+    def __bind_subscriber_handlers(self, plugin_id: str, plugin_handler_ids: set, subscribers: Dict[str, Any]):
+        """
+        将订阅表中属于插件类的处理器标记为该插件。
+        """
+        for handler_identifier, handler_data in subscribers.items():
+            handler = handler_data[1] if isinstance(handler_data, tuple) else handler_data
+            handler_object_id = id(self.__normalize_handler_callable(handler))
+            if handler_object_id in plugin_handler_ids:
+                self.__handler_plugin_ids[handler_identifier] = (plugin_id, handler_object_id)
+
+    def __bind_loaded_plugin_event_handler(self, handler_identifier: str, handler: Callable):
+        """
+        对运行期新增或重注册的处理器，尝试绑定到已加载插件。
+        """
+        try:
+            from app.core.plugin import PluginManager
+        except ImportError:
+            return
+
+        handler_object_id = id(self.__normalize_handler_callable(handler))
+        class_name, _ = self.__parse_handler_names(handler)
+        if not class_name:
+            return
+        plugin_cls = PluginManager().plugins.get(class_name)
+        if (
+                plugin_cls
+                and plugin_cls.__name__ == class_name
+                and handler_object_id in self.__get_plugin_handler_object_ids(plugin_cls)
+        ):
+            self.__handler_plugin_ids[handler_identifier] = (class_name, handler_object_id)
+
+    def __is_handler_registered(self, handler_identifier: str) -> bool:
+        """
+        检查处理器标识是否仍存在于任一订阅表。
+        """
+        return (
+                any(handler_identifier in subscribers for subscribers in self.__broadcast_subscribers.values())
+                or any(handler_identifier in subscribers for subscribers in self.__chain_subscribers.values())
+        )
+
+    @staticmethod
+    def __normalize_handler_callable(handler: Any) -> Any:
+        """
+        归一化函数、绑定方法、staticmethod/classmethod 包装。
+        """
+        if isinstance(handler, (staticmethod, classmethod)):
+            return handler.__func__
+        return getattr(handler, "__func__", handler)
 
     def disable_event_handler(self, target: Union[Callable, type]):
         """
@@ -467,17 +582,16 @@ class EventManager(metaclass=Singleton):
                 # 对于同步函数，在线程池中运行
                 self.__executor.submit(self.__safe_invoke_handler, handler, isolated_event)
 
-    @classmethod
     def __should_dispatch_to_target_plugin(
-            cls,
+            self,
             handler: Callable,
             handler_identifier: str,
             target_plugin_id: str,
     ) -> bool:
         """
-        限定插件输入事件只投递给目标插件，避免自由文本被其他插件观察到。
+        限定插件输入事件只投递给目标插件的真实处理器。
         """
-        class_name, method_name = cls.__parse_handler_names(handler)
+        class_name, method_name = self.__parse_handler_names(handler)
         if class_name != target_plugin_id:
             return False
         identifier_parts = (handler_identifier or "").split(".")
@@ -491,6 +605,45 @@ class EventManager(metaclass=Singleton):
             logger.debug(
                 "Target plugin dispatch skipped because handler identifier does not match handler: "
                 f"target={target_plugin_id}, handler={handler_identifier}, parsed={class_name}.{method_name}"
+            )
+            return False
+        binding = self.__handler_plugin_ids.get(handler_identifier)
+        handler_object_id = id(self.__normalize_handler_callable(handler))
+        if not binding or binding != (target_plugin_id, handler_object_id):
+            logger.debug(
+                "Target plugin dispatch skipped because handler is not bound to target plugin: "
+                f"target={target_plugin_id}, handler={handler_identifier}, binding={binding}"
+            )
+            return False
+        try:
+            from app.core.plugin import PluginManager
+
+            plugin_manager = PluginManager()
+            plugin_cls = plugin_manager.plugins.get(target_plugin_id)
+            plugin_obj = plugin_manager.running_plugins.get(target_plugin_id)
+        except Exception as err:
+            logger.debug(
+                "Target plugin dispatch skipped because plugin manager is unavailable: "
+                f"target={target_plugin_id}, handler={handler_identifier}, error={err}"
+            )
+            return False
+        if plugin_cls is None or plugin_obj is None or type(plugin_obj) is not plugin_cls:
+            logger.debug(
+                "Target plugin dispatch skipped because target plugin is not running: "
+                f"target={target_plugin_id}, handler={handler_identifier}"
+            )
+            return False
+        expected_class = plugin_cls.__name__
+        if expected_class != target_plugin_id:
+            logger.debug(
+                "Target plugin dispatch skipped because target plugin class name is invalid: "
+                f"target={target_plugin_id}, handler={handler_identifier}, plugin_class={expected_class}"
+            )
+            return False
+        if handler_object_id not in self.__get_plugin_handler_object_ids(plugin_cls):
+            logger.debug(
+                "Target plugin dispatch skipped because handler is not owned by current target plugin: "
+                f"target={target_plugin_id}, handler={handler_identifier}"
             )
             return False
         return True
