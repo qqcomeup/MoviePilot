@@ -17,10 +17,10 @@ name: PR-Agent Precheck
           - review
           - describe
       model:
-        description: "LiteLLM model name"
-        required: true
+        description: "LiteLLM model name; leave empty to use repository variable PR_AGENT_MODEL"
+        required: false
         type: string
-        default: openai/claude-fable-5
+        default: ""
 
 permissions:
   contents: read
@@ -48,7 +48,8 @@ jobs:
         env:
           PR_URL: ${{ inputs.pr_url }}
           PR_AGENT_COMMAND: ${{ inputs.command }}
-          PR_AGENT_MODEL: ${{ inputs.model }}
+          PR_AGENT_MODEL_INPUT: ${{ inputs.model }}
+          PR_AGENT_MODEL_VARIABLE: ${{ vars.PR_AGENT_MODEL }}
           GITHUB_TOKEN: ${{ github.token }}
           PR_AGENT_GITHUB_TOKEN: ${{ secrets.PR_AGENT_GITHUB_TOKEN }}
           OPENAI_KEY_SECRET: ${{ secrets.OPENAI_KEY }}
@@ -61,7 +62,7 @@ jobs:
           export GITHUB__USER_TOKEN="${PR_AGENT_GITHUB_TOKEN:-$GITHUB_TOKEN}"
           export OPENAI__KEY="${OPENAI_KEY_SECRET:-$OPENAI_API_KEY_SECRET}"
           export OPENAI__API_BASE="${OPENAI_API_BASE_SECRET:-$OPENAI_BASE_URL_SECRET}"
-          export CONFIG__MODEL="$PR_AGENT_MODEL"
+          export CONFIG__MODEL="${PR_AGENT_MODEL_INPUT:-${PR_AGENT_MODEL_VARIABLE:-openai/claude-fable-5}}"
           export CONFIG__FALLBACK_MODELS="[]"
           export CONFIG__CUSTOM_MODEL_MAX_TOKENS="32000"
           export CONFIG__RESPONSE_LANGUAGE="zh-CN"
